@@ -1,0 +1,479 @@
+---
+title: "STA141AProjtest"
+author: "Xiaojing Zhou"
+date: "2024-03-18"
+output: html_document
+---
+
+```{r include=FALSE}
+setwd("/Users/vickizhou/Desktop/test")
+
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(caret) 
+library(xgboost)
+library(pROC)
+library(class)
+
+
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+
+```
+
+```{r}
+test=list()
+for(i in 1:2){
+  test[[i]]=readRDS(paste('test',i,'.rds',sep=''))
+  test[[i]]$mouse_name
+  test[[i]]$date_exp
+}
+```
+## Abstract
+The primary objective of this project is to build a predictive model to predict the outcome (i.e., feedback type) of each trial using the neural activity data (i.e., spike trains in spks), along with the stimuli (the left and right contrasts). I will focus more on the stimuli.
+
+
+**Summary Information**
+```{r}
+ls(test[[1]])
+
+```
+There are 8 variables in each test: contrast_left, contrast_right", feedback_type, mouse_name, brain_area, date_exp, spks, time.
+Five variables are available for each trial, namely
+
+feedback_type: type of the feedback, 1 for success and -1 for failure
+contrast_left: contrast of the left stimulus
+contrast_right: contrast of the right stimulus
+time: centers of the time bins for spks
+spks: numbers of spikes of neurons in the visual cortex in time bins defined in time
+brain_area: area of the brain where each neuron lives
+
+```{r }
+get_test_summary <- function(test) {
+  num_trials <- length(test$spks)
+  num_neurons <- sapply(test$spks, function(x) dim(x)[1]) %>% mean()
+  date_exp <- test$date_exp[1]
+  mouse_name <- test$mouse_name[1]
+  feedback_types <- table(test$feedback_type)
+  brain_areas <- table(test$brain_area)
+  
+  return(list(
+    NumTrials = num_trials,
+    NumNeurons = num_neurons,
+    DateExp = date_exp,
+    MouseName = mouse_name,
+    FeedbackTypes = feedback_types,
+    BrainAreas = brain_areas
+  ))
+}
+test_summaries <- lapply(test, get_test_summary)
+test_summary_df <- data.frame(
+  testID = 1:length(test),
+  NumTrials = sapply(test_summaries, `[[`, "NumTrials"),
+  NumNeurons = sapply(test_summaries, `[[`, "NumNeurons"),
+  DateExp = sapply(test_summaries, `[[`, "DateExp"),
+  MouseName = sapply(test_summaries, `[[`, "MouseName")
+)
+
+head(test_summary_df)
+```
+This table is an overview. s the initial explorations of the dataset, there are insights into the volume of data collected over time across different mice. I can identify trends and notice the diversity of data across tests and subjects.
+
+
+
+**For a selected Trail**
+**test Choose to Test**
+```{r}
+sc=test_chosen=2
+sc
+```
+**Trial Choose to Test**
+```{r}
+tc=trail_chosen= 2
+tc
+```
+
+
+**Different Regions of The Brain Used**
+```{r}
+brain_area<-table(test[[sc]]$brain_area)
+```
+This table provides a overview of the distribution of neurons across various brain areas for the selected test, indicating the diversity of neural recordings obtained from different functional regions of the brain. This table
+will help researchers to correlate specific neural activities with different brain areas and feedbacks during the experiment.
+
+
+```{r}
+dim(test[[sc]]$spks[[1]])
+```
+In the sleeted test, there is 1090 neurons over 40 time bins.
+
+```{r}
+test[[sc]]$spks[[1]][6,6] 
+test[[sc]]$brain_area[6]
+```
+
+In this particular trial, the 6th neuron, located in the CP does not have a spiking activity during the 6th time bin in this selected test.
+
+\newpage
+
+
+## Part I. Exploratory data analysis
+
+```{r include=FALSE}
+test_summary <- lapply(test, function(x) {
+  data.frame(
+    NumNeurons = dim(x$spks[[sc]])[1], 
+    NumTrials = length(x$spks)
+  )
+})
+
+test_summary_df <- do.call(rbind, test_summary)
+
+test_summary_df$testID <- 1:nrow(test_summary_df)
+```
+
+**Summary of Neurons**
+```{r}
+#Summary of  Neurons
+summary(test_summary_df$NumNeurons)
+```
+```{r include=FALSE}
+ggplot(test_summary_df, aes(x = factor(testID), y = NumNeurons)) +
+  geom_bar(stat = "identity", fill = "#e0c7e3") +
+  geom_text(aes(label = NumNeurons), vjust = -0.3, size = 3.5) +  # Add number annotations
+  theme_minimal() +
+  labs(title = "Number of Neurons per test", x = "test", y = "Number of Neurons")
+
+
+```
+
+
+```{r include=FALSE }
+#Summary of Trials
+summary(test_summary_df$NumTrials)
+```
+```{r include=FALSE}
+# Plot for Number of Trials
+ggplot(test_summary_df, aes(x = factor(testID), y = NumTrials)) +
+  geom_bar(stat = "identity", fill = "#d2f1dc") +
+  geom_text(aes(label = NumTrials), vjust = -0.3, size = 3.5) +
+  theme_minimal() +
+  labs(title = "Number of Trials per test", x = "test", y = "Number of Trials")
+
+```
+
+**Feedback**
+
+In this feedback table (-1 represent failure, 1 represent success) shows the outcomes of the decisions of mice across all trials in the test.
+-1 indicate trials where the mouse made an incorrect decision.
+1 indicate successful trials where the mouse responded correctly according to the rules.
+```{r}
+table(test[[sc]]$feedback_type)
+```
+
+
+**Spks**
+```{r include=FALSE}
+trial_counts <- length(test[[sc]]$spks)
+
+average_spike_rates <- sapply(1:trial_counts, function(trial_id) mean(test[[sc]]$spks[[trial_id]], na.rm = TRUE))
+
+
+```
+
+**average spike_rates **
+```{r}
+overall_average_spike_rate <- mean(average_spike_rates, na.rm = TRUE)
+overall_average_spike_rate
+```
+
+This is the mean of number of skps for selected trial, which is useful for assessing the general level of responsiveness or activity in the visual cortex under the selected test. 
+
+The plot below can easier to check fluctuations in neural activity across trial and comparison to the trial-wide average.
+```{r}
+plot(average_spike_rates, type = "b", main = "Average Spike Rates for Selected test", xlab = "Trial", ylab = "Average Spike Rate")
+abline(h = overall_average_spike_rate, col = "red", lwd = 2)
+```
+
+\newpage
+## Part II. Data integration
+
+**Table for Contrast Levels and the Number of Times it was presented on the each side **
+
+This table shows the number of trials for each contrast level(0, 0.25, 0.5, 1), with the side (left or right) the stimulus was presented on.
+```{r}
+Contrast_levels <- c(test[[sc]]$contrast_left, test[[sc]]$contrast_right)
+sides <- c(rep("left", length(test[[sc]]$contrast_left)), 
+           rep("right", length(test[[sc]]$contrast_right)))
+combined_lr <- table(Contrast_levels, sides)
+
+print(combined_lr)
+```
+For instance, at contrast level of 0, there are 133 times on the left and 115 times on the right indicates many trials where no stimulus was shown on either side, more frequently on the left.
+Other values(0.25, 0.5, 1) show the distribution of non-zero contrast levels, which are crucial for testing the mice's decision-making under varying conditions.
+
+
+```{r include=FALSE}
+data_for_plot <- data.frame(
+  ContrastLevel = Contrast_levels, # Ensure this is correctly aligned with your spike rate calculations
+  AverageSpikeRate = average_spike_rates
+)
+plot(data_for_plot$ContrastLevel, data_for_plot$AverageSpikeRate,
+     xlab = "Contrast Level", ylab = "Average Spike Rate",
+     main = "Average Spike Rates by Contrast Level",
+     pch = 19, col = "dodgerblue")
+
+```
+
+```{r}
+contrast_levels <- c(test[[sc]]$contrast_left, test[[sc]]$contrast_right)
+sides <- c(rep("left", length(test[[sc]]$contrast_left)), 
+           rep("right", length(test[[sc]]$contrast_right)))
+feedback_types <- rep(test[[sc]]$feedback_type, 2) 
+
+data_combined <- data.frame(ContrastLevel = contrast_levels, 
+                            Side = sides, 
+                            FeedbackType = feedback_types)
+
+data_combined$FeedbackType <- factor(data_combined$FeedbackType, levels = c(-1, 0, 1), labels = c("Failure", "No Action", "Success"))
+ggplot(data_combined, aes(x = ContrastLevel, fill = FeedbackType)) +
+  geom_bar(position = "dodge") +
+  facet_wrap(~Side) + # Separate plots for left and right sides
+  labs(title = "Feedback Types by Contrast Level and Side",
+       x = "Contrast Level",
+       y = "Count") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal()
+```
+
+In the plot above, it shows the feedback types (success, failure) are distributed across different contrast levels and sides in the selected test. It provides insights into how the stimuli's contrast level and presentation side might influence the mice's decision-making outcomes.
+
+In the code below, divided the contrast_left and contrast_right in to into four factors in decision, as different condition will lead to different feedbacks.
+```{r}
+n_obs = length(test[[sc]]$feedback_type)
+
+dat = tibble(
+    feedback_type = as.factor(test[[sc]]$feedback_type),
+    decision = rep('name', n_obs),
+    avg_spikes = rep(0, n_obs)
+)
+
+for (i in 1:n_obs){
+    # decision 
+    if (test[[sc]]$contrast_left[i] > test[[sc]]$contrast_right[i]){
+        dat$decision[i] = '1' 
+    } else if (test[[sc]]$contrast_left[i] < test[[sc]]$contrast_right[i]){
+        dat$decision[i] = '2' 
+    } else if (test[[sc]]$contrast_left[i] == test[[sc]]$contrast_right[i] 
+               & test[[sc]]$contrast_left[i] == 0){
+        dat$decision[i] = '3' 
+    } else{
+        dat$decision[i] = '4' 
+    }
+    
+    # avg_spks
+    spks.trial = test[[sc]]$spks[[i]]
+    total.spikes = apply(spks.trial, 1, sum)
+    dat$avg_spikes[i] = mean(total.spikes)
+}
+
+dat$decision = as.factor(dat$decision)
+summary(dat)
+```
+
+\newpage
+## Part III. Model training and prediction.
+**'glm' function **
+```{r include=FALSE}
+set.seed(101)
+sample <- sample.int(n = n_obs, size = floor(.8 * n_obs), replace = F)
+train <- dat[sample, ]
+test  <- dat[-sample, ]
+```
+```{r}
+fit1 <- glm(feedback_type~., data = train, family="binomial")
+summary(fit1)
+```
+```{r include=FALSE}
+prediction0 = factor(rep('1', nrow(test)), levels = c('1', '-1'))
+mean(prediction0 != test$feedback_type)
+```
+```{r include=FALSE}
+pred1 <- predict(fit1, test %>% select(-feedback_type), type = 'response')
+logical_vector <- pred1 > 0.5
+prediction1 <- factor(logical_vector, levels = c(FALSE, TRUE), labels = c('-1', '1'))
+
+mean(prediction1 != test$feedback_type)
+```
+```{r}
+cm <- confusionMatrix(prediction1, test$feedback_type, dnn = c("Prediction", "Reference"))
+cm
+```
+
+The caauracy is not bad (0.75) here.However, the the Positive Predictive Value is NaN and Negative Predictive Value 0.75, which means that the bias is still here. 
+It still need improve for the prediction. 
+The plot below also show the 
+```{r}
+plt <- as.data.frame(cm$table)
+
+ggplot(plt, aes(Reference, Prediction, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels=c("-1","1")) +
+        scale_y_discrete(labels=c("-1","1"))
+
+```
+
+**Gradient Boosting Machines (GBM) with 'xgboost'**
+```{r include=FALSE}
+# Convert factors to dummy variables for both training and test sets
+train_processed <- caret::dummyVars("~.", data = train[, -1]) %>% predict(newdata = train[, -1]) %>% as.data.frame()
+test_processed <- caret::dummyVars("~.", data = test[, -1]) %>% predict(newdata = test[, -1]) %>% as.data.frame()
+
+# Convert to matrices, excluding the outcome variable
+train_matrix <- as.matrix(train_processed[, -ncol(train_processed)])
+test_matrix <- as.matrix(test_processed[, -ncol(test_processed)])
+train_labels <- train_processed$feedback_type
+test_labels <- test_processed$feedback_type
+
+# Ensure that outcome variable is numeric
+train_processed$feedback_type <- as.numeric(as.character(train$feedback_type)) - 1
+test_processed$feedback_type <- as.numeric(as.character(test$feedback_type)) - 1
+
+
+# Ensure that outcome variable is numeric and bind it back
+train_processed$feedback_type <- as.numeric(as.character(train$feedback_type)) - 1
+test_processed$feedback_type <- as.numeric(as.character(test$feedback_type)) - 1
+
+# Now convert to matrices
+train_matrix <- as.matrix(train_processed[, -ncol(train_processed)])  # Exclude the outcome variable
+train_labels <- train_processed$feedback_type
+test_matrix <- as.matrix(test_processed[, -ncol(test_processed)])
+test_labels <- test_processed$feedback_type
+
+# Create DMatrix objects
+dtrain <- xgboost::xgb.DMatrix(data = train_matrix, label = train_labels)
+dtrain
+dtest <- xgboost::xgb.DMatrix(data = test_matrix, label = test_labels)
+dtest
+
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "logloss", # Evaluation metrics for validation data
+  max_depth = 3,           # Max depth of a tree
+  eta = 0.1,               # Learning rate
+  subsample = 0.8,         # Subsample ratio of the training instances
+  colsample_bytree = 0.8   # Subsample ratio of columns when constructing each tree
+)
+
+nrounds <- 100 # Number of boosting rounds
+
+train_labels <- ifelse(train$feedback_type == "1", 1, 0)
+test_labels <- ifelse(test$feedback_type == "1", 1, 0)
+
+# Ensure no other values besides 0 and 1
+unique(train_labels)  # Should only show 0 and 1
+unique(test_labels)
+
+
+train_matrix <- data.matrix(train[, -which(names(train) == "feedback_type")])
+test_matrix <- data.matrix(test[, -which(names(test) == "feedback_type")])
+
+dtrain <- xgboost::xgb.DMatrix(data = train_matrix, label = train_labels)
+dtest <- xgboost::xgb.DMatrix(data = test_matrix, label = test_labels)
+
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "logloss", # Evaluation metrics for validation data
+  max_depth = 3,           # Max depth of a tree
+  eta = 0.1,               # Learning rate
+  subsample = 0.8,         # Subsample ratio of the training instances
+  colsample_bytree = 0.8   # Subsample ratio of columns when constructing each tree
+)
+
+nrounds <- 100 # Number of boosting rounds
+
+# Train model
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = nrounds,
+  nthread = 1, # Number of threads. Set to maximum available if possible
+  watchlist = list(eval = dtest, train = dtrain),
+  early_stopping_rounds = 10 # Stop if no improvement for 10 rounds
+)
+
+# Predict on test set
+pred_probs <- predict(xgb_model, newdata = dtest)
+
+thresholds <- seq(0.4, 0.6, by = 0.01)
+for (threshold in thresholds) {
+  pred_classes_temp <- ifelse(pred_probs > threshold, 1, 0)
+  cat("Threshold:", threshold, "Class Distribution:", table(pred_classes_temp), "\n\n")
+}
+
+
+pred_classes_factor <- factor(pred_classes_temp, levels = c(0, 1))
+test_labels_factor <- factor(test_labels, levels = c(0, 1))
+
+# Set model parameters
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "logloss",
+  max_depth = 3,
+  eta = 0.1,
+  subsample = 0.8,
+  colsample_bytree = 0.8
+)
+
+# Train the model
+nrounds <- 100
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = nrounds,
+  nthread = 1, # Adjust based on your system
+  watchlist = list(eval = dtest, train = dtrain),
+  early_stopping_rounds = 10
+)
+
+# Predict probabilities on the test set
+pred_probs <- predict(xgb_model, newdata = dtest)
+
+# Find the optimal threshold based on F1 score or another metric
+roc_curve <- roc(test_labels, pred_probs)
+coords <- coords(roc_curve, "best", best.method = "closest.topleft", ret = "threshold")
+best_threshold <- coords$threshold
+
+# Apply the optimal threshold to generate class predictions
+pred_classes <- ifelse(pred_probs > best_threshold, 1, 0)
+```
+```{r}
+# Evaluate the model with a confusion matrix
+conf_matrix <- confusionMatrix(factor(pred_classes, levels = c(0, 1)), factor(test_labels, levels = c(0, 1)))
+print(conf_matrix)
+
+# Additional evaluation: ROC AUC
+roc_result <- roc(response = test_labels, predictor = pred_probs)
+auc_value <- auc(roc_result)
+print(paste("AUC:", auc_value))
+
+```
+
+The accuracy of 0.8 and AUC of 0.7467 suggest that this model is performing reasonably well. Espieccaly the Kappa statistic indicates that this model's predictions are substantially better than random. 
+
+
+\newpage
+## Discussion
+The model 2 with GBM is better than model 1, and also we need to consider the class imbalance.
+The dimension reduction techniques could be applied to these features to enhance predictive performance.
+With the learning of constructing a decision variable from contrast_left and contrast_right, it help me a lot in this project.
+
+\newpage
+## Appendix
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+```
